@@ -1,12 +1,9 @@
-# =============================================================================
-# FILE: PsChef.psm1
-# =============================================================================
-
 $ChefHome = Join-Path $HOME ".phellams" pschef
 $GlobalConfigPath = Join-Path $ChefHome "config.json"
 if (-not (Test-Path $ChefHome)) { New-Item -Type Directory $ChefHome -Force | Out-Null }
 
-# --- 1. THE ARTISAN PALETTE (256-Color TUI Engine) ---
+# ....../ SECTION: THE ARTISAN PALETTE (256-Color TUI Engine) 
+# ___________________________________________________________
 
 function Get-ChefPalette {
     $E = [char]27
@@ -29,25 +26,57 @@ function Get-ChefSize {
     try { $W = $Host.UI.RawUI.WindowSize.Width; return if ($W -gt 100) { 100 } else { $W - 2 } } catch { return 80 }
 }
 
-# --- 2. TUI COMPONENTS (Headers, Logs, Progress) ---
+# ....../ SECTION: TUI COMPONENTS (Headers, Logs, Progress) ---
+# _____________________________________________________________
 
-function Write-KitchenHeader {
-    param([string]$Title, [string]$Subtitle)
+function Write-KitchenFooter {
+    param([string]$Message, [string]$Status = "OK")
     $P = Get-ChefPalette; $W = Get-ChefSize
-    Write-Host "`n$($P.Rail)┌─$($P.Flame) $Title $($P.Rail)$('─' * ($W - $Title.Length - 5))┐$($P.Reset)"
-    if ($Subtitle) { Write-Host "$($P.Rail)│ $($P.Steel)$Subtitle$(' ' * ($W - $Subtitle.Length - 4))$($P.Rail)│$($P.Reset)" }
-    Write-Host "$($P.Rail)├$('─' * ($W - 2))┤$($P.Reset)"
+    $Color = if ($Status -eq "OK") { $P.Herb } else { $P.Berry }
+    
+    $Line1 = "$($P.Rail)├$('─' * ($W - 2))┤$($P.Reset)`n"
+    
+    $Time = (Get-Date).ToString("HH:mm:ss")
+    $RightPad = $W - $Message.Length - $Time.Length - 9
+    $Line2 = "$($P.Rail)│ $($Color)$Status $($P.Salt)$Message$(' ' * $RightPad)$($P.Skillet)$Time $($P.Rail)│$($P.Reset)`n"
+    $Line3 = "$($P.Rail)└$('─' * ($W - 2))┘$($P.Reset)"
+
+    # Blast the whole footer at once
+    [Console]::Write($Line1 + $Line2 + $Line3)
 }
 
 function Write-KitchenFooter {
     param([string]$Message, [string]$Status="OK")
     $P = Get-ChefPalette; $W = Get-ChefSize
     $Color = if ($Status -eq "OK") { $P.Herb } else { $P.Berry }
+    
     Write-Host "$($P.Rail)├$('─' * ($W - 2))┤$($P.Reset)"
+    
     $Time = (Get-Date).ToString("HH:mm:ss")
-    $Right = [Math]::Max(0, $W - $Message.Length - $Time.Length - 8)
-    Write-Host "$($P.Rail)│ $($Color)$Status $($P.Salt)$Message$(' ' * $Right)$($P.Skillet)$Time $($P.Rail)│$($P.Reset)"
+    # Fix: Offset -1 to fix the right-side alignment of the footer border
+    $RightPad = $W - $Message.Length - $Time.Length - 9
+    
+    Write-Host "$($P.Rail)│ $($Color)$Status $($P.Salt)$Message$(' ' * $RightPad)$($P.Skillet)$Time $($P.Rail)│$($P.Reset)"
     Write-Host "$($P.Rail)└$('─' * ($W - 2))┘$($P.Reset)`n"
+}
+
+function Get-ChefMetadata {
+    param([string]$Path)
+    $Meta = @{ Desc = "No description provided."; Author = "Chef" }
+    if (-not (Test-Path $Path)) { return $Meta }
+
+    $Content = Get-Content $Path -TotalCount 30
+    # Search for .SYNOPSIS or .DESC or .DESCRIPTION
+    foreach ($Line in $Content) {
+        if ($Line -match "\.(SYNOPSIS|DESC|DESCRIPTION)\s+(.*)") {
+            $Meta.Desc = $Matches[2].Trim()
+            break
+        }
+        if ($Line -match "\.AUTHOR\s+(.*)") {
+            $Meta.Author = $Matches[1].Trim()
+        }
+    }
+    return $Meta
 }
 
 function Write-KitchenLog {
@@ -68,7 +97,7 @@ function Show-SousChef {
     Write-Host "`r$($P.Rail)│  $($P.Flame)>>  $($P.Salt)$($Message.PadRight($MsgSize)) $Bar $($P.Flame)$Pct%$($P.Reset)$E[K" -NoNewline
 }
 
-# --- 3. KITCHEN API (Helpers & Dependencies) ---
+# --- KITCHEN API (Helpers & Dependencies) ---
 
 function Check-Stove {
     param([Parameter(Mandatory)]$Tool)
@@ -106,7 +135,7 @@ function Plate-Dish {
     Write-KitchenLog Task "Plating dish..."; New-Skeleton -Structure $Structure; Write-KitchenLog Success "Dish Plated."
 }
 
-# --- 4. STATE ENGINE ---
+# --- STATE ENGINE ---
 
 function Get-KitchenState {
     $F = Join-Path $ChefHome "kitchen.state.json"; return if (Test-Path $F) { Get-Content $F -Raw | ConvertFrom-Json } else { @{Installed=@{}} }
@@ -118,7 +147,7 @@ function Set-KitchenState {
     $S | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $ChefHome "kitchen.state.json")
 }
 
-# --- 5. INTERACTIVE ENGINE (Viewport Menu) ---
+# --- INTERACTIVE ENGINE (Viewport Menu) ---
 
 function Show-ChefInteractiveMenu {
     param(
@@ -127,55 +156,60 @@ function Show-ChefInteractiveMenu {
         [string]$Subtitle = "Select an Item"
     )
     $P = Get-ChefPalette; $W = Get-ChefSize; $Sel = 0; $Max = $Data.Count - 1
-    $E = [char]27; $ClearFromCursor = "$E[J"; $HomeCursor = "$E[H"
+    $E = [char]27
+    $MenuStartLine = 5 
 
     try {
         $Host.UI.RawUI.CursorSize = 0
-        # Initial Header Draw (Only once to prevent title flicker)
         Clear-Host
+        # The Header is static, draw it once.
         Write-KitchenHeader $Title $Subtitle
-        $MenuStartLine = 5 # Adjust based on your header height
-
+        
         while ($true) {
-            # Move cursor to the start of the menu list, not the top of the screen
+            # Move cursor to start of menu area
             Write-Host "$E[$($MenuStartLine);1H" -NoNewline
             
-            # Viewport Math
+            # 1. INITIALIZE STRING BUNDLE
+            $Buffer = New-Object System.Text.StringBuilder
+            
             $H = $Host.UI.RawUI.WindowSize.Height - 12
             $Start = 0
             if ($Sel -ge ($Start + $H)) { $Start = $Sel - $H + 1 }; if ($Sel -lt $Start) { $Start = $Sel }; $End = [Math]::Min(($Start + $H - 1), $Max)
 
             for ($i = $Start; $i -le $End; $i++) {
                 $Itm = $Data[$i]
-                # Label depends on if we are looking at Pantries or Ingredients
-                $Label = if ($Itm.Name) { $Itm.Name } else { "$($Itm.Pantry)/$($Itm.Ingredient)" }
-                $Label = $Label.PadRight(30)
-                $D = if ($Itm.Desc) { $Itm.Desc }else { "" }; if ($D.Length -gt ($W - 40)) { $D = $D.Substring(0, ($W - 43)) + "..." }
+                $Label = (if ($Itm.Type -eq "Pantry") { $Itm.Name } else { $Itm.Ingredient }).PadRight(25)
+                $Desc = if ($Itm.Desc) { $Itm.Desc } else { "---" }
+                if ($Desc.Length -gt ($W - 35)) { $Desc = $Desc.Substring(0, ($W - 38)) + "..." }
                 
+                # 2. ADD TO BUFFER (Using ANSI for colors)
                 if ($i -eq $Sel) { 
-                    Write-Host "$($P.Rail)│  $($P.Flame)>> $($P.Salt)$Label $($P.Skillet)$D$($P.Reset)$E[K" 
-                }
-                else { 
-                    Write-Host "$($P.Rail)│     $($P.Steel)$Label $($P.Skillet)$D$($P.Reset)$E[K" 
+                    [void]$Buffer.AppendLine("$($P.Rail)│  $($P.Flame)>> $($P.Salt)$Label $($P.Skillet)$Desc$($P.Reset)$E[K") 
+                } else { 
+                    [void]$Buffer.AppendLine("$($P.Rail)│     $($P.Steel)$Label $($P.Skillet)$Desc$($P.Reset)$E[K") 
                 }
             }
             
-            # Fill remaining viewport space with empty rail lines to prevent "ghosting"
-            for ($j = ($End - $Start); $j -lt $H; $j++) { Write-Host "$($P.Rail)│$E[K" }
+            # Fill empty space in viewport
+            for ($j = ($End - $Start); $j -lt $H; $j++) { [void]$Buffer.AppendLine("$($P.Rail)│$E[K") }
             
+            # 3. BLAST THE BUFFER TO CONSOLE
+            # This is significantly faster than multiple Write-Host calls
+            Write-Host $Buffer.ToString() -NoNewline
+
             Write-KitchenFooter "Item $($Sel+1) of $($Max+1) | [Esc] Back" "WAIT"
 
             $K = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
             switch ($K.VirtualKeyCode) {
-                38 { if ($Sel -gt 0) { $Sel-- }else { $Sel = $Max } } 
-                40 { if ($Sel -lt $Max) { $Sel++ }else { $Sel = 0 } } 
+                38 { if($Sel -gt 0){$Sel--}else{$Sel=$Max} } 
+                40 { if($Sel -lt $Max){$Sel++}else{$Sel=0} } 
                 13 { return $Data[$Sel] } 
                 27 { return $null } 
             }
         }
-    }
-    finally { $Host.UI.RawUI.CursorSize = 25 }
+    } finally { $Host.UI.RawUI.CursorSize = 25 }
 }
+
 # --- 6. VISUALIZER (Workflow Tree) ---
 
 function Show-ChefWorkflow {
@@ -222,28 +256,27 @@ function Invoke-PsChef {
 
     # Route: Interactive / Menu
     if ($Mode -eq "menu-live" -or (-not $Mode)) {
-        # 1. Level 1: Select Pantry
+        # Level 1: Pantries
         $Pantries = Get-ChildItem $Root -Directory | ForEach-Object { 
-            [PSCustomObject]@{ Name = $_.Name; Desc = "View all ingredients in $($_.Name)"; Type = "Pantry" } 
+            [PSCustomObject]@{ Name = $_.Name; Desc = "View contents of the $($_.Name) pantry."; Type = "Pantry" } 
         }
         
-        $PantryChoice = Show-ChefInteractiveMenu -Data $Pantries -Title "PANTRY SELECT"
+        $PantryChoice = Show-ChefInteractiveMenu -Data $Pantries -Title "PANTRY SELECT" -Subtitle "Drill down into a category"
         
         if ($PantryChoice) {
-            # 2. Level 2: Select Ingredient in that Pantry
+            # Level 2: Ingredients
             $Items = Get-ChildItem (Join-Path $Root $PantryChoice.Name) -Filter "*.ps1" | ForEach-Object {
-                $D = "No Desc"; Get-Content $_.FullName -Total 10 | ForEach { if ($_ -match "\.SYNOPSIS\s+(.*)") { $D = $Matches[1] } }
-                [PSCustomObject]@{ Pantry = $PantryChoice.Name; Ingredient = $_.BaseName; Desc = $D; Type = "Ingredient" }
+                $Meta = Get-ChefMetadata -Path $_.FullName
+                [PSCustomObject]@{ Pantry = $PantryChoice.Name; Ingredient = $_.BaseName; Desc = $Meta.Desc; Type = "Ingredient" }
             }
             
-            $IngChoice = Show-ChefInteractiveMenu -Data $Items -Title "INGREDIENT: $($PantryChoice.Name.ToUpper())"
+            $IngChoice = Show-ChefInteractiveMenu -Data $Items -Title "INGREDIENTS: $($PantryChoice.Name.ToUpper())" -Subtitle "Select a dish to prep"
             
             if ($IngChoice) {
                 Invoke-PsChef -Mode "prep" -Pantry $IngChoice.Pantry -Ingredient $IngChoice.Ingredient
             }
             else {
-                # If User Escaped, go back to Level 1
-                Invoke-PsChef -Mode "menu-live"
+                Invoke-PsChef -Mode "menu-live" # Recurse back to start
             }
         }
         return
