@@ -1,9 +1,9 @@
 <#
-.SYNOPSIS
+.synopsis
     Generates a PostgreSQL Docker Compose stack with volume persistence.
-.AUTHOR
+.author
     @GarveyKSnow
-.DEPENDENCIES
+.dependencies
     docker
 #>
 param(
@@ -20,7 +20,7 @@ Show-SousChef -Message "Generating Postgres Mise..." -Current 50 -Total 100
 
 # Handle Volume Strategy
 $VDef = if ($Storage -eq "volume") { "volumes:`n  db_data:" } else { "" }
-$VMap = if ($Storage -eq "volume") { "db_data:/var/lib/postgresql/data" } else { "$Storage:/var/lib/postgresql/data" }
+$VMap = if ($Storage -eq "volume") { "db_data:/var/lib/postgresql/data" } else { "$Storage`:/var/lib/postgresql/data" }
 
 $Yml = Fetch-Mise "postgres.tmplt" @{
     Name = $Name; User = $User; Pass = $Pass;

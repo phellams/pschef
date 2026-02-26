@@ -6,11 +6,13 @@
 .DEPENDENCIES
     curl, sudo
 #>
-Check-Stove "curl"
+Assert-ChefTool "curl"
 
 Show-SousChef -Message "Downloading Docker..." -Current 30 -Total 100
+
 # Run official script
 $Script = "curl -fsSL https://get.docker.com -o get-docker.sh && sudo sh get-docker.sh"
+
 pwsh -c "$Script"
 
 Show-SousChef -Message "Setting user permissions..." -Current 80 -Total 100

@@ -1,6 +1,13 @@
-$ChefHome = Join-Path $HOME ".phellams" pschef
-$GlobalConfigPath = Join-Path $ChefHome "config.json"
-if (-not (Test-Path $ChefHome)) { New-Item -Type Directory $ChefHome -Force | Out-Null }
+<# MODULE NAME: pschef #>
+
+# ....../ SECTION: CONFIGURATION
+# ___________________________________________________________
+# NOTE: change config path to global so recepies, ingredients can be shared across projects
+$global:ChefHome = Join-Path $HOME ".phellams" 'pschef'
+$global:ChefConfigFile = Join-Path $global:ChefHome "kitchen.state.json"
+# Test Config file path and create config file if doesnt exist
+if (-not (Test-Path $global:ChefHome)) { New-Item -Type Directory $global:ChefHome -Force | Out-Null }
+if (-not (Test-Path $global:ChefConfigFile)) { New-Item -Type file $global:ChefConfigFile -Force | Out-Null }
 
 # ....../ SECTION: THE ARTISAN PALETTE (256-Color TUI Engine) 
 # ___________________________________________________________
@@ -29,20 +36,20 @@ function Get-ChefSize {
 # ....../ SECTION: TUI COMPONENTS (Headers, Logs, Progress) ---
 # _____________________________________________________________
 
-function Write-KitchenFooter {
-    param([string]$Message, [string]$Status = "OK")
+function Write-KitchenHeader {
+    param([string]$Title, [string]$Subtitle)
     $P = Get-ChefPalette; $W = Get-ChefSize
-    $Color = if ($Status -eq "OK") { $P.Herb } else { $P.Berry }
     
-    $Line1 = "$($P.Rail)├$('─' * ($W - 2))┤$($P.Reset)`n"
+    # Fix: Corrected dash length to prevent overhanging right border
+    $DashLen = $W - $Title.Length - 5
+    Write-Host "`n$($P.Rail)┌─$($P.Flame) $Title $($P.Rail)$('─' * $DashLen)┐$($P.Reset)"
     
-    $Time = (Get-Date).ToString("HH:mm:ss")
-    $RightPad = $W - $Message.Length - $Time.Length - 9
-    $Line2 = "$($P.Rail)│ $($Color)$Status $($P.Salt)$Message$(' ' * $RightPad)$($P.Skillet)$Time $($P.Rail)│$($P.Reset)`n"
-    $Line3 = "$($P.Rail)└$('─' * ($W - 2))┘$($P.Reset)"
-
-    # Blast the whole footer at once
-    [Console]::Write($Line1 + $Line2 + $Line3)
+    if ($Subtitle) { 
+        # Fix: Adjusted padding to account for the border character
+        $SubPad = $W - $Subtitle.Length - 3
+        Write-Host "$($P.Rail)│ $($P.Steel)$Subtitle$(' ' * $SubPad)$($P.Rail)│$($P.Reset)" 
+    }
+    Write-Host "$($P.Rail)├$('─' * ($W - 2))┤$($P.Reset)"
 }
 
 function Write-KitchenFooter {
@@ -99,30 +106,96 @@ function Show-SousChef {
 
 # --- KITCHEN API (Helpers & Dependencies) ---
 
-function Check-Stove {
-    param([Parameter(Mandatory)]$Tool)
-    if (Get-Command $Tool -ErrorAction SilentlyContinue) { return }
-    Write-KitchenLog Warning "The stove is cold! Missing tool: '$Tool'"
-    $Fix = Get-ChildItem (Join-Path $PSScriptRoot "Ingredients") -Recurse -Filter "$Tool.ps1" | Select -First 1
+function Assert-ChefTool {
+    param([Parameter(Mandatory)][string]$Tool)
+    
+    if (Get-Command $Tool -ErrorAction SilentlyContinue) {
+        return $true
+    }
+
+    Write-KitchenLog Warning "Stove is cold: Missing '$Tool'."
+    
+    # Self-Healing Search
+    $Fix = Get-ChildItem (Join-Path $PSScriptRoot "Ingredients") -Recurse -Filter "$Tool.ps1" | Select-Object -First 1
     if ($Fix) {
-        Write-KitchenLog Task "Found recipe: [$($Fix.Directory.Name)/$($Fix.BaseName)]"
-        if ((Read-Host "Prep this now? [Y/n]") -match "^[Yy]") {
-            Invoke-PsChef "prep" $Fix.Directory.Name $Fix.BaseName
-            if (Get-Command $Tool -ErrorAction SilentlyContinue) { return }
+        Write-KitchenLog Task "Found installer in Pantry: [$($Fix.Directory.Name)/$($Fix.BaseName)]"
+        $Prompt = Read-Host "  Prep this now? [Y/n]"
+        if ($Prompt -match "^[Yy]") {
+            Invoke-PsChef -Mode "prep" -Pantry $Fix.Directory.Name -Ingredient $Fix.BaseName
+            if (Get-Command $Tool -ErrorAction SilentlyContinue) { return $true }
         }
     }
-    Write-KitchenLog Error "Critical Dependency Missing: $Tool"; throw "MissingTool"
+    
+    Write-KitchenLog Error "Critical tool '$Tool' is not installed."
+    return $false
 }
 
-function Measure-Ingredient { param($Value, $Name="Param") if([string]::IsNullOrWhiteSpace($Value)){ Write-KitchenLog Error "Missing: $Name"; throw "Stop" } }
+function Get-ChefRegistry {
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet("Ingredients", "Recipes", "Mise", "Config")]
+        [string]$Category
+    )
+
+    $P = Get-ChefPalette
+    $Results = @()
+
+    switch ($Category) {
+        "Ingredients" {
+            Get-ChildItem (Join-Path $PSScriptRoot "Ingredients") -Recurse -Filter "*.ps1" | ForEach-Object {
+                $Meta = Get-ChefMetadata -Path $_.FullName
+                $Results += [PSCustomObject]@{
+                    Pantry = $_.Directory.Name
+                    Name   = $_.BaseName
+                    Author = $Meta.Author
+                    Desc   = $Meta.Desc
+                    Tag    = if ($Meta.Author -match "PsChef|Community") { "OFFICIAL" } else { "LOCAL" }
+                }
+            }
+        }
+        "Recipes" {
+            Get-ChildItem (Join-Path $PSScriptRoot "Recipes") -Filter "*.ps1" | ForEach-Object {
+                $Content = & $_.FullName
+                $Results += [PSCustomObject]@{
+                    Name  = $_.BaseName
+                    Desc  = $Content.Description
+                    Steps = $Content.Sequence.Count
+                }
+            }
+        }
+        "Mise" {
+            Get-ChildItem (Join-Path $PSScriptRoot "Mise") | ForEach-Object {
+                $Results += [PSCustomObject]@{ Name = $_.Name; Size = "$([Math]::Round($_.Length / 1KB, 2)) KB" }
+            }
+        }
+        "Config" {
+            if (Test-Path $GlobalConfigPath) {
+                $Cfg = Get-Content $global:ChefConfigFile | ConvertFrom-Json
+                $Cfg.psobject.Properties | ForEach-Object {
+                    $Results += [PSCustomObject]@{ Setting = $_.Name; Value = $_.Value }
+                }
+            }
+        }
+    }
+    return $Results
+}
+
+function Measure-Ingredient { 
+    param($Value, $Name="Param") 
+    if([string]::IsNullOrWhiteSpace($Value)){ 
+        Write-KitchenLog Error "Missing: $Name"; throw "Stop" } }
 
 function Require-Ingredient {
-    param([string]$Pantry, [string]$Ingredient)
-    $S = Get-KitchenState; if (-not $S.Installed."$Pantry/$Ingredient") {
-        Write-KitchenLog Warning "Dependency Missing: $Pantry/$Ingredient"; Invoke-PsChef -Mode "prep" -Pantry $Pantry -Ingredient $Ingredient
+    param([string]$Pantry, [string]$Ingredient, [switch]$Force)
+    
+    $S = Get-KitchenState
+    $IsInstalled = $null -ne $S.Installed."$Pantry/$Ingredient"
+    
+    if (-not $IsInstalled -or $Force) {
+        if ($Force) { Write-KitchenLog Info "Force-prepping $Pantry/$Ingredient..." }
+        Invoke-PsChef -Mode "prep" -Pantry $Pantry -Ingredient $Ingredient
     }
 }
-
 function Fetch-Mise { 
     param($Name, [hashtable]$Vars=@{}) 
     $P = if (Test-Path "$PWD\.pschef\Mise\$Name") { "$PWD\.pschef\Mise\$Name" } else { "$PSScriptRoot\Mise\$Name" }
@@ -138,13 +211,88 @@ function Plate-Dish {
 # --- STATE ENGINE ---
 
 function Get-KitchenState {
-    $F = Join-Path $ChefHome "kitchen.state.json"; return if (Test-Path $F) { Get-Content $F -Raw | ConvertFrom-Json } else { @{Installed=@{}} }
+    param([switch]$AsList)
+    
+    if (-not (Test-Path $global:ChefHome -ErrorAction SilentlyContinue)) { New-Item -Type Directory $global:ChefHome -Force | Out-Null }
+
+    $StateFile = Join-Path $global:ChefHome "kitchen.state.json"
+    if (-not (Test-Path $StateFile -ErrorAction SilentlyContinue)) { 
+        if ($AsList) { 
+            return @() 
+        } else { 
+            @{ Installed = @{} } 
+        } 
+    }
+
+    $RawState = Get-Content $StateFile -Raw | ConvertFrom-Json 
+
+    if ($AsList) {
+        $List = @()
+        # Use psobject to iterate safely
+        foreach ($Prop in $RawState.Installed.psobject.Properties) {
+            $Key = $Prop.Name
+            $Entry = $Prop.Value
+            
+            # SAFE SPLIT: Ensure we have both halves
+            $Parts = $Key -split "/"
+            if ($Parts.Count -lt 2) { continue } # Skip malformed keys
+
+            $List += [PSCustomObject]@{
+                Pantry     = $Parts[0]
+                Ingredient = $Parts[1] # This was likely null/empty
+                Installed  = $Entry.At
+                Params     = if ($Entry.Meta.Params) { $Entry.Meta.Params -join " " } else { "" }
+                Tag        = "HISTORY"
+            }
+            # Auto Fix binarie
+            # NOTE: add in below logic for auto-fix health restore
+            # if (-not (Get-Command $Binary -ErrorAction SilentlyContinue)) {
+            #     Write-KitchenLog Error "Missing: $Binary"
+            #     if ($AutoFix) {
+            #         Write-KitchenLog Task "Auto-fixing: $Binary..."
+            #         Invoke-PsChef -Mode "prep" -Pantry $Item.Pantry -Ingredient $Item.Ingredient -Force
+            #     }
+            # }
+        }
+        return $List
+    }
+    return $RawState
 }
 
 function Set-KitchenState {
-    param($Pantry, $Ingredient, $Meta)
-    $S = Get-KitchenState; $S.Installed."$Pantry/$Ingredient" = @{ At=(Get-Date).ToString("yyyy-MM-dd HH:mm"); Meta=$Meta }
-    $S | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $ChefHome "kitchen.state.json")
+    param(
+        [Parameter(Mandatory)] [string]$Pantry,
+        [Parameter(Mandatory)] [string]$Ingredient,
+        [Parameter(Mandatory)] [hashtable]$Meta
+    )
+    
+    # Load existing state
+    $S = Get-KitchenState
+    
+    # Add or Update the entry
+    # check - if key doesnt exist, create it
+    if (-not $S.Installed.psobject.Properties.Name.Contains($Key)) {
+        $S.Installed.psobject.Properties.Add($Key, @{ At = (Get-Date).ToString("yyyy-MM-dd HH:mm"); Meta = $Meta })
+    }
+
+    $Key = "$Pantry/$Ingredient"
+    $S.Installed.$Key = @{ 
+        At   = (Get-Date).ToString("yyyy-MM-dd HH:mm")
+        Meta = $Meta 
+    }
+    
+    # ROTATION LOGIC: Maintain only the 100 most recent entries
+    $MaxEntries = 100
+    $Properties = $S.Installed.psobject.Properties
+    
+    if ($Properties.Count -gt $MaxEntries) {
+        # Sort by the 'At' date string and pick the oldest one to remove
+        $OldestKey = ($Properties | Sort-Object { $_.Value.At } | Select-Object -First 1).Name
+        $S.Installed.psobject.Properties.Remove($OldestKey)
+    }
+    
+    # Save back to disk
+    $S | ConvertTo-Json -Depth 5 | Set-Content -Path $global:ChefConfigFile
 }
 
 # --- INTERACTIVE ENGINE (Viewport Menu) ---
@@ -178,15 +326,19 @@ function Show-ChefInteractiveMenu {
 
             for ($i = $Start; $i -le $End; $i++) {
                 $Itm = $Data[$i]
-                $Label = (if ($Itm.Type -eq "Pantry") { $Itm.Name } else { $Itm.Ingredient }).PadRight(25)
-                $Desc = if ($Itm.Desc) { $Itm.Desc } else { "---" }
-                if ($Desc.Length -gt ($W - 35)) { $Desc = $Desc.Substring(0, ($W - 38)) + "..." }
-                
-                # 2. ADD TO BUFFER (Using ANSI for colors)
+    
+                # Standardize Label resolving
+                $RawLabel = if ($Itm.Type -eq "Pantry") { $Itm.Name } else { $Itm.Ingredient }
+                $Label = "$RawLabel".PadRight(25)
+
+                $DisplayDesc = if ($null -ne $Itm.Desc) { $Itm.Desc } else { "---" }
+                if ($DisplayDesc.Length -gt ($W - 35)) { $DisplayDesc = $DisplayDesc.Substring(0, ($W - 38)) + "..." }
+    
                 if ($i -eq $Sel) { 
-                    [void]$Buffer.AppendLine("$($P.Rail)│  $($P.Flame)>> $($P.Salt)$Label $($P.Skillet)$Desc$($P.Reset)$E[K") 
-                } else { 
-                    [void]$Buffer.AppendLine("$($P.Rail)│     $($P.Steel)$Label $($P.Skillet)$Desc$($P.Reset)$E[K") 
+                    [void]$Buffer.AppendLine("$($P.Rail)│  $($P.Flame)>> $($P.Salt)$Label $($P.Skillet)$DisplayDesc$($P.Reset)$E[K") 
+                }
+                else { 
+                    [void]$Buffer.AppendLine("$($P.Rail)│     $($P.Steel)$Label $($P.Skillet)$DisplayDesc$($P.Reset)$E[K") 
                 }
             }
             
@@ -210,7 +362,7 @@ function Show-ChefInteractiveMenu {
     } finally { $Host.UI.RawUI.CursorSize = 25 }
 }
 
-# --- 6. VISUALIZER (Workflow Tree) ---
+# --- VISUALIZER (Workflow Tree) ---
 
 function Show-ChefWorkflow {
     param([string]$RecipeName)
@@ -226,10 +378,12 @@ function Show-ChefWorkflow {
     Write-Host "$($P.Rail)└──────────────────────────────┘$($P.Reset)`n"
 }
 
-# --- 7. REPO MANAGEMENT (Sync) ---
+# --- REPO MANAGEMENT (Sync) ---
 
 function Update-ChefStock {
-    $ConfPath = Join-Path $ChefHome "config.json"; if(!(Test-Path $ConfPath)){return}
+    [cmdletbinding()]
+    param()
+    $ConfPath = Join-Path $global:ChefHome "config.json"; if(!(Test-Path $ConfPath)){return}
     $Conf = Get-Content $ConfPath -Raw | ConvertFrom-Json; $Cache = Join-Path (Split-Path $PSScriptRoot -Parent) "pschief-pantry"
     foreach ($Repo in $Conf.Global.Pantry) {
         $Local = Join-Path $Cache (($Repo -split "/")[-1] -replace ".git","")
@@ -241,42 +395,81 @@ function Update-ChefStock {
     Write-KitchenLog Success "Pantry stocked from community repos."
 }
 
-# --- 8. THE ROUTER (Central Command) ---
+# --- THE ROUTER (Central Command) ---
 
 function Invoke-PsChef {
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [Parameter(Position=0)] [string]$Mode,       # prep, cook, menu, flow, status, stock
-        [Parameter(Position=1)] [string]$Pantry,     
-        [Parameter(Position=2)] [string]$Ingredient, 
-        [Parameter(ValueFromRemainingArguments)] [string[]]$Params
+        [Parameter(Position = 0)] 
+        [ValidateSet("prep", "cook", "flow", "status", "stock", "menu-live")]
+        [string]$Mode,
+
+        [Parameter(Position = 1)] [string]$Pantry,
+        [Parameter(Position = 2)] [string]$Ingredient,
+
+        [Parameter(ValueFromRemainingArguments)] [string[]]$Params,
+
+        # New Params for v2.4
+        [ValidateSet("Ingredients", "Recipes", "Mise", "Config")]
+        [string]$List,
+        [switch]$Raw
     )
 
     $Root = Join-Path $PSScriptRoot "Ingredients"
+    # Handle List Requests
+    if ($List) {
+        $Data = Get-ChefRegistry -Category $List
+        
+        if ($Raw) { return $Data }
 
+        # ANSI Rendered List
+        Write-KitchenHeader "REGISTRY: $List" "System Audit"
+        $P = Get-ChefPalette
+        foreach ($Item in $Data) {
+            $TagColor = if ($Item.Tag -eq "OFFICIAL") { $P.Herb } else { $P.Water }
+            $Label = if ($List -eq "Ingredients") { "$($Item.Pantry)/$($Item.Name)" } else { $Item.Name }
+            
+            Write-Host "$($P.Rail)│  $($TagColor)● $($P.Steel)$($Label.PadRight(25)) $($P.Skillet)$($Item.Desc)$($P.Reset)"
+        }
+        Write-KitchenFooter "$($Data.Count) items found"
+        return
+    }
     # Route: Interactive / Menu
     if ($Mode -eq "menu-live" -or (-not $Mode)) {
+        
         # Level 1: Pantries
         $Pantries = Get-ChildItem $Root -Directory | ForEach-Object { 
-            [PSCustomObject]@{ Name = $_.Name; Desc = "View contents of the $($_.Name) pantry."; Type = "Pantry" } 
+            [PSCustomObject]@{ 
+                Name = $_.Name; 
+                Desc = "View all ingredients in $($_.Name)"; 
+                Type = "Pantry" 
+            } 
         }
         
         $PantryChoice = Show-ChefInteractiveMenu -Data $Pantries -Title "PANTRY SELECT" -Subtitle "Drill down into a category"
         
-        if ($PantryChoice) {
+        if ($null -ne $PantryChoice) {
             # Level 2: Ingredients
-            $Items = Get-ChildItem (Join-Path $Root $PantryChoice.Name) -Filter "*.ps1" | ForEach-Object {
+            $PantryPath = Join-Path $Root $PantryChoice.Name
+            $Items = Get-ChildItem $PantryPath -Filter "*.ps1" | ForEach-Object {
                 $Meta = Get-ChefMetadata -Path $_.FullName
-                [PSCustomObject]@{ Pantry = $PantryChoice.Name; Ingredient = $_.BaseName; Desc = $Meta.Desc; Type = "Ingredient" }
+                [PSCustomObject]@{ 
+                    Pantry = $PantryChoice.Name; 
+                    Ingredient = $_.BaseName; 
+                    Desc = $Meta.Desc; 
+                    Type = "Ingredient" 
+                }
             }
             
-            $IngChoice = Show-ChefInteractiveMenu -Data $Items -Title "INGREDIENTS: $($PantryChoice.Name.ToUpper())" -Subtitle "Select a dish to prep"
+            $IngTitle = "INGREDIENTS: $($PantryChoice.Name.ToUpper())"
+            $IngChoice = Show-ChefInteractiveMenu -Data $Items -Title $IngTitle -Subtitle "Select a dish to prep"
             
-            if ($IngChoice) {
+            if ($null -ne $IngChoice) {
+                # Recursively call prep
                 Invoke-PsChef -Mode "prep" -Pantry $IngChoice.Pantry -Ingredient $IngChoice.Ingredient
-            }
-            else {
-                Invoke-PsChef -Mode "menu-live" # Recurse back to start
+            } else {
+                # Go back to main menu on ESC
+                Invoke-PsChef -Mode "menu-live"
             }
         }
         return
@@ -284,8 +477,31 @@ function Invoke-PsChef {
 
     # Route: Utilities
     switch ($Mode) {
-        "flow"   { Show-ChefWorkflow $Pantry; return }
-        "status" { Get-KitchenState | ForEach-Object { $_.Installed.Keys | ForEach { [PSCustomObject]@{Dish=$_; At=$_.At} } } | Format-Table -AutoSize; return }
+        "flow"   { Show-ChefWorkflow $Pantry; return; }
+        "status" {
+            $History = Get-KitchenState -AsList
+            
+            if ($Raw) { return $History }
+
+            if ($History.Count -eq 0) {
+                Write-KitchenLog Warning "Kitchen is pristine. No history found."
+                return
+            }
+
+            Write-KitchenHeader "KITCHEN STATUS" "Installation History"
+            $P = Get-ChefPalette
+            
+            foreach ($Item in $History) {
+                # Visual: History uses a Gold dot to distinguish from Official/Local
+                $Dot = "$([char]27)[38;5;221m●" 
+                $Label = "$($Item.Pantry)/$($Item.Ingredient)"
+                
+                Write-KitchenLog Info "$Dot  $([char]27)[38;5;255m$($Label.PadRight(25)) $([char]27)[38;5;239mInstalled: $($Item.Installed)"
+            }
+            
+            Write-KitchenFooter "$($History.Count) Dishes Served"
+            return
+        }
         "stock"  { Update-ChefStock; return }
         "cook"   { 
             $Recipe = & (Join-Path $PSScriptRoot "Recipes\$Pantry.ps1")
@@ -297,23 +513,46 @@ function Invoke-PsChef {
 
     # Route: Prep (The Executioner)
     if ($Mode -eq "prep") {
-        $Target = if($Ingredient){$Ingredient}else{$Pantry}; $Script = Join-Path $Root "$Pantry\$Target.ps1"
+        $Target = if ($Ingredient) { $Ingredient } else { $Pantry }
+        $Script = Join-Path $Root "$Pantry\$Target.ps1"
+    
         if (Test-Path $Script) {
             Write-KitchenHeader "PREP STATION" "$Pantry / $Target"
             try {
                 if ($PSCmdlet.ShouldProcess("$Pantry/$Target", "Prep")) {
-                    # Dependency Parsing
-                    Get-Content $Script -Total 20 | ForEach { if($_ -match "\.DEPENDENCIES\s+(.*)") { ($Matches[1] -split ",").Trim() | ForEach { Check-Stove $_ } } }
+                
+                    # FIX: Explicitly handle dependency parsing to avoid 'if' cmd errors
+                    $Metadata = Get-Content $Script -TotalCount 30
+                    foreach ($Line in $Metadata) {
+                        if ($Line -match "\.DEPENDENCIES\s+(.*)") {
+                            $DepList = ($Matches[1] -split ",").Trim()
+                            foreach ($Dep in $DepList) {
+                                # Use the new v2.4 Assertion
+                                $Valid = Assert-ChefTool -Tool $Dep
+                                if (-not $Valid) { throw "Missing Required Tool: $Dep" }
+                            }
+                        }
+                    }
+
+                    # Execute Ingredient
                     & $Script @Params
-                    Set-KitchenState $Pantry $Target @{Params=$Params}
+                    Set-KitchenState -Pantry $Pantry -Ingredient $Target -Meta @{Params = $Params }
+                    break;
                     Write-KitchenFooter "Dish Plated" "OK"
                 }
-            } catch { Write-KitchenLog Error $_.Exception.Message; Write-KitchenFooter "Chef Error" "FAIL" }
-        } else { Write-KitchenLog Error "Ingredient not found." }
+            }
+            catch {
+                Write-KitchenLog Error $_.Exception.Message
+                Write-KitchenFooter "Chef Error" "FAIL"
+            }
+        }
+        else {
+            Write-KitchenLog Error "Ingredient '$Pantry/$Target' not found."
+        }
     }
 }
 
-# --- 9. COMPLETION & EXPORT ---
+# --- COMPLETION & EXPORT ---
 $ChefCompleter = {
     param($cmd, $param, $word, $ast, $bound)
     $Root = Join-Path $PSScriptRoot "Ingredients"

@@ -28,3 +28,17 @@
     `chef stock`
   * See available tools:
     `chef menu`
+
+
+```pre
+PsChef/
+├── Ingredients/
+│   ├── dotnet/
+│   │   ├── aot.ps1       # Logic
+│   │   └── aot.md        # Docs
+│   └── zig/
+│       ├── bin.ps1
+│       └── bin.md
+├── Recipes/              # Multi-step instructions
+└── Mise/                 # Raw templates ({{Name}})
+```
