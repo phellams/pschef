@@ -72,6 +72,7 @@ function Get-ChefSize {
 # -----------------------------------------------------------------------------
 # SECTION: TUI COMPONENTS (Headers, Logs, Progress) ---
 # =============================================================================
+
 function Write-KitchenHeader {
     param([string]$Title, [string]$Subtitle)
     $P = Get-ChefPalette; $W = Get-ChefSize
@@ -714,13 +715,290 @@ function Update-ChefStock {
 
 # @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 # -----------------------------------------------------------------------------
+# SECTION: STOVE API (Helpers, Dashboards) ---
+# =============================================================================
+function Get-StoveHeader {
+    param([string]$App, [string]$Controller)
+    $P = Get-ChefPalette
+    Write-Host "`n$($P.Rail)┌─$($P.Flame) STOVE CONTROL: $($App.ToUpper()) / $($Controller.ToUpper()) $($P.Rail)─┐$($P.Reset)"
+}
+
+function Get-StoveFooter {
+    param([string]$Status = "OK")
+    $P = Get-ChefPalette
+    Write-Host "$($P.Rail)└────────────────────────────────┘ $($P.Brand)[$Status]$($P.Reset)`n"
+}
+
+function Get-StoveLogs {
+    param([string]$Level, [string]$Message)
+    # Similar to Write-KitchenLog, but uses distinct Stove badging
+    $P = Get-ChefPalette
+    $Badge = switch ($Level) {
+        "Info" { "$($P.Water)■$($P.Reset)" }
+        "Warn" { "$($P.Wip)▲$($P.Reset)" }
+        "Error" { "$($P.Flame)X$($P.Reset)" }
+        "Fix" { "$($P.Herb)◆$($P.Reset)" } # Used for auto-fix recommendations
+    }
+    Write-Host "$($P.Rail)│  $Badge $Message"
+}
+    
+function Get-KitchenDashboard {
+    param(
+        [Parameter(Mandatory)]
+        [scriptblock]$TelemetrySource,
+        
+        [switch]$Live
+    )
+
+    $ESC = [char]27
+    $AltBufferEnter = "$ESC[?1049h"
+    $AltBufferExit = "$ESC[?1049l"
+    $HideCursor = "$ESC[?25l"
+    $ShowCursor = "$ESC[?25h"
+    $ClearEOL = "$ESC[K" 
+    $ClearEOS = "$ESC[J" 
+    $Inverse = "$ESC[7m" 
+    $Reset = "$ESC[0m"
+
+    try {
+        [Console]::Write($AltBufferEnter + $HideCursor)
+        [Console]::CursorVisible = $false 
+
+        $IsRunning = $true
+        $SelectedIndex = 0
+        $ActiveFilterID = $null
+        $ViewMode = "Main" # Can be 'Main' or 'Logs'
+
+        while ($IsRunning) {
+            # 1. Fetch data. We now pass ViewMode so the controller knows if it needs to fetch heavy logs
+            $Data = Invoke-Command -ScriptBlock $TelemetrySource -ArgumentList $ActiveFilterID, $ViewMode
+
+            if ($Data.Containers.Count -gt 0 -and $SelectedIndex -ge $Data.Containers.Count) { 
+                $SelectedIndex = [Math]::Max(0, $Data.Containers.Count - 1) 
+            }
+
+            [Console]::SetCursorPosition(0, 0)
+            $P = Get-ChefPalette
+            $TargetID = if ($Data.Containers.Count -gt 0) { $Data.Containers[$SelectedIndex].ID } else { $null }
+
+            # --- RENDER: LOGS MODAL ---
+            if ($ViewMode -eq "Logs") {
+                [Console]::WriteLine("  $($P.Brand)$($Data.App.ToUpper()) DASHBOARD  >  LOGS: $($Data.ActiveView)$($P.Reset)$ClearEOL")
+                [Console]::WriteLine("──────────────────────────────────────────────────────────────$ClearEOL")
+                
+                # Print the last 20 lines of logs
+                if ($Data.Logs) {
+                    foreach ($LogLine in $Data.Logs) {
+                        # Truncate log lines to prevent terminal wrapping from breaking the UI
+                        $SafeLine = if ($LogLine.Length -gt 60) { $LogLine.Substring(0, 57) + "..." } else { $LogLine.PadRight(60) }
+                        [Console]::WriteLine("  $($P.Steel)$SafeLine$($P.Reset)$ClearEOL")
+                    }
+                }
+                else {
+                    [Console]::WriteLine("  $($P.Wip)No logs available or container is empty.$($P.Reset)$ClearEOL")
+                }
+
+                [Console]::WriteLine("──────────────────────────────────────────────────────────────$ClearEOL")
+                [Console]::WriteLine("  [Esc] Back to Dashboard  [Q]uit$ClearEOL")
+                [Console]::Write($ClearEOS)
+            } 
+            # --- RENDER: MAIN DASHBOARD ---
+            else {
+                $ViewTitle = if ($ActiveFilterID) { "$($Data.App.ToUpper()) DASHBOARD  >  $($Data.ActiveView)" } else { "$($Data.App.ToUpper()) DASHBOARD  >  GLOBAL" }
+                
+                [Console]::WriteLine("  $($P.Brand)$ViewTitle$($P.Reset)  |  Uptime: $($Data.Uptime)$ClearEOL")
+                [Console]::WriteLine("──────────────────────────────────────────────────────────────$ClearEOL")
+                [Console]::WriteLine("  CPU  $($Data.Charts.CPU)  $($Data.Stats.CPUPct)%$ClearEOL")
+                [Console]::WriteLine("  MEM  $($Data.Charts.MEM)  $($Data.Stats.MEMPct)%$ClearEOL")
+                [Console]::WriteLine("──────────────────────────────────────────────────────────────$ClearEOL")
+                [Console]::WriteLine("  CPU Trend:  $($Data.Charts.CPUSpark)$ClearEOL")
+                [Console]::WriteLine("  MEM Trend:  $($Data.Charts.MEMSpark)$ClearEOL")
+                [Console]::WriteLine("──────────────────────────────────────────────────────────────$ClearEOL")
+                [Console]::WriteLine("  $($P.Steel)CONTAINERS ($($Data.Containers.Count))$($P.Reset)$ClearEOL")
+                
+                for ($i = 0; $i -lt $Data.Containers.Count; $i++) {
+                    $C = $Data.Containers[$i]
+                    $RowStyle = if ($i -eq $SelectedIndex) { $Inverse } else { "" }
+                    $Pointer = if ($i -eq $SelectedIndex) { "▶" } else { " " }
+                    $StatusColor = if ($C.CPU -eq 0 -and $C.MEM -eq 0) { $P.Wip } else { $P.Water } 
+                    
+                    $NameCol = $C.Name.PadRight(20)
+                    $CpuCol = "$($C.CPU)%".PadRight(8)
+                    $MemCol = "$($C.MEM)%".PadRight(8)
+                    
+                    [Console]::WriteLine("$RowStyle  $StatusColor$Pointer$Reset$RowStyle $NameCol CPU: $CpuCol MEM: $MemCol$Reset$ClearEOL")
+                }
+
+                [Console]::WriteLine("──────────────────────────────────────────────────────────────$ClearEOL")
+                [Console]::WriteLine("  [Q]uit  [Up/Down] Navigate  [Enter] Filter  [L]ogs  [E]xec$ClearEOL")
+                [Console]::WriteLine("  [R]estart  [S]top  [P]ause  [D]elete$ClearEOL")
+                [Console]::Write($ClearEOS)
+            }
+
+            if (-not $Live) { break }
+
+            # --- KEYBOARD ROUTING ---
+            if ([Console]::KeyAvailable) {
+                $KeyInfo = [Console]::ReadKey($true)
+
+                if ($ViewMode -eq "Logs") {
+                    switch ($KeyInfo.Key) {
+                        'Escape' { $ViewMode = "Main" }
+                        'Q' { $IsRunning = $false }
+                    }
+                }
+                else {
+                    switch ($KeyInfo.Key) {
+                        'Q' { $IsRunning = $false }
+                        'UpArrow' { if ($SelectedIndex -gt 0) { $SelectedIndex-- } }
+                        'DownArrow' { if ($SelectedIndex -lt ($Data.Containers.Count - 1)) { $SelectedIndex++ } }
+                        'Enter' {
+                            if ($ActiveFilterID) { $ActiveFilterID = $null }
+                            else { $ActiveFilterID = $TargetID }
+                        }
+                        'L' { 
+                            if ($TargetID) { $ViewMode = "Logs" } 
+                        }
+                        'E' {
+                            if ($TargetID) {
+                                # Suspend Dashboard & Drop to Shell
+                                [Console]::CursorVisible = $true
+                                [Console]::Write($AltBufferExit + $ShowCursor)
+                                
+                                # Try bash first, fallback to sh if bash is missing
+                                Write-Host "`n◆ Entering container shell. Type 'exit' to return to dashboard...`n" -ForegroundColor Cyan
+                                docker exec -it $TargetID /bin/sh -c "if command -v bash >/dev/null 2>&1; then bash; else sh; fi"
+                                
+                                # Resume Dashboard
+                                [Console]::Write($AltBufferEnter + $HideCursor)
+                                [Console]::CursorVisible = $false
+                            }
+                        }
+                        # Actions dispatched to controller via fire-and-forget
+                        'S' { if ($TargetID) { docker stop $TargetID 2>&1 | Out-Null } }
+                        'R' { if ($TargetID) { docker restart $TargetID 2>&1 | Out-Null } }
+                        'P' { 
+                            if ($TargetID) { 
+                                # Toggle pause state implicitly
+                                $State = docker inspect -f '{{.State.Paused}}' $TargetID
+                                if ($State -match "true") { docker unpause $TargetID 2>&1 | Out-Null }
+                                else { docker pause $TargetID 2>&1 | Out-Null }
+                            } 
+                        }
+                        'D' { 
+                            if ($TargetID) { 
+                                docker rm -f $TargetID 2>&1 | Out-Null
+                                if ($ActiveFilterID -eq $TargetID) { $ActiveFilterID = $null }
+                            } 
+                        }
+                    }
+                }
+            }
+
+            Start-Sleep -Milliseconds 500
+        }
+    }
+    finally {
+        [Console]::CursorVisible = $true
+        [Console]::Write($AltBufferExit + $ShowCursor)
+    }
+}
+
+function Invoke-StoveDiagnostic {
+    param([string]$App, [string]$ErrorOutput)
+    
+    if ($ErrorOutput -match "permission denied.*docker daemon") {
+        Get-StoveLogs "Warn" "Detected socket permission error."
+        Get-StoveLogs "Fix" "Suggested Auto-Fix: Add user to docker group."
+        
+        $Prompt = Read-Host "  Apply fix now? [Y/n]"
+        if ($Prompt -match "^[Yy]") {
+            # Execute standard PsChef prep for the fix
+            chef prep sys docker -Action fix-permissions
+            return $true
+        }
+    }
+    return $false
+}
+
+function New-StoveGauge {
+    param(
+        [Parameter(Mandatory)]
+        [double]$Percentage,
+        
+        [int]$Width = 20
+    )
+    
+    # 1. Enforce strict 0-100 bounds
+    if ($Percentage -lt 0) { $Percentage = 0 }
+    if ($Percentage -gt 100) { $Percentage = 100 }
+    
+    # 2. Define the exact block characters
+    $FillChar = "▓"
+    $EmptyChar = "░"
+    
+    # 3. Calculate blocks based on requested terminal width
+    $FilledCount = [Math]::Round(($Percentage / 100) * $Width)
+    $EmptyCount = $Width - $FilledCount
+    
+    # 4. Handle edge cases where math rounding pushes out of bounds
+    if ($FilledCount -lt 0) { $FilledCount = 0; $EmptyCount = $Width }
+    if ($FilledCount -gt $Width) { $FilledCount = $Width; $EmptyCount = 0 }
+    
+    $Bar = ($FillChar * $FilledCount) + ($EmptyChar * $EmptyCount)
+    
+    return "[$Bar]"
+}
+
+function New-StoveSparkline {
+    param(
+        [Parameter(Mandatory)]
+        [double[]]$Data,
+        
+        [int]$MaxWidth = 15
+    )
+    
+    if ($null -eq $Data -or $Data.Count -eq 0) { return "" }
+    
+    # 1. Truncate array to fit terminal constraints (keep newest data at the end)
+    if ($Data.Count -gt $MaxWidth) {
+        $Data = $Data[ - $MaxWidth..-1]
+    }
+    
+    # 2. Define the 8-tier Unicode block scale (Lower 1/8 to Full Block)
+    $Ticks = @(' ', '▂', '▃', '▄', '▅', '▆', '▇', '█')
+    
+    # 3. Find boundaries for normalization
+    $Min = ($Data | Measure-Object -Minimum).Minimum
+    $Max = ($Data | Measure-Object -Maximum).Maximum
+    
+    # 4. Handle flatlines (no variance in data)
+    if ($Min -eq $Max) {
+        $Flat = $Ticks[3] * $Data.Count # Default to a mid-line representation
+        return $Flat
+    }
+    
+    $Range = $Max - $Min
+    $Sparkline = ""
+    
+    # 5. Normalize and Map
+    foreach ($Value in $Data) {
+        $Normalized = [Math]::Round((($Value - $Min) / $Range) * ($Ticks.Count - 1))
+        $Sparkline += $Ticks[$Normalized]
+    }
+    
+    return $Sparkline
+}
+
+# @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+# -----------------------------------------------------------------------------
 # SECTION: THE ROUTER (Central Command) ---
 # =============================================================================
 function Invoke-PsChef {
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Position = 0)] 
-        [ValidateSet("prep", "cook", "flow", "status", "stock", "menu-live","info")]
+        [ValidateSet("prep", "cook", "stove", "flow", "status", "stock", "menu-live", "info")]
         [string]$Mode,
 
         [Parameter(Position = 1)] [string]$Pantry,
@@ -966,6 +1244,24 @@ function Invoke-PsChef {
             }
 
             Write-KitchenFooter "EOF"
+            return
+        }
+        "stove" {
+            # Syntax: chef stove docker networks -List <networkname>
+            $App = $Pantry       # e.g., 'docker'
+            $Controller = $Ingredient # e.g., 'networks'
+    
+            $StoveDir = Join-Path $global:ChefHome "pschef-pantry" "stoves" $App
+            $ControllerPath = Join-Path $StoveDir "$Controller.ps1"
+
+            if (-not (Test-Path $ControllerPath)) {
+                Write-KitchenLog Error "Stove controller not found: $App / $Controller"
+                return
+            }
+
+            # Pass the remaining parameters straight through to the controller
+            # We use $Params hashtable populated by the dynamic args
+            & $ControllerPath @Params
             return
         }
         "flow"   { Show-ChefWorkflow $Pantry; return; }
