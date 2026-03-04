@@ -42,3 +42,9 @@ PsChef/
 ├── Recipes/              # Multi-step instructions
 └── Mise/                 # Raw templates ({{Name}})
 ```
+
+## Evolving PsChef from a Day-1 provisioning engine (IaC) into a complete Day-2 operations control plane (Observability & Administration).
+
+By enforcing JSON outputs, an Alternate Buffer dashboard, and a strict controller hierarchy (state.ps1, monitor.ps1, etc.), you are essentially building a modular lazydocker / k9s directly into your PowerShell workflow.
+
+Since this requires high-performance ASCII chart rendering (sparklines, gauges) and precise terminal control via the Alternate Buffer, we can leverage the TUI primitives that have been designing for terminal control to handle the heavy VT sequence lifting.
